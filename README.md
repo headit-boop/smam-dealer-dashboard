@@ -1,39 +1,38 @@
 ﻿# SMAM Automart — Dealer Dashboard (GitHub Pages)
 
-**Live dashboard:** https://headit-boop.github.io/smam-dealer-dashboard/
+**Live:** https://headit-boop.github.io/smam-dealer-dashboard/
 
-One page, one section per report tab of the dealer MIS workbook:
+Pick a report from the **Report** dropdown — only that tab's report is shown.
+**Year** and **Month** dropdowns filter every report. The selection is kept in
+the URL, so a view can be bookmarked or shared
+(e.g. `?report=billing&year=2026&month=6`).
 
-| # | Section | Source tab |
-|---|---|---|
-| 01 | Sales engine — monthly + model table | BOTH DATA |
-| 02 | Month × year matrix | Perfromance |
-| 03 | Billing — financiers, consultants, districts | BILLING REGISTER MIS |
-| 04 | Off-take — monthly, status, ageing | OFF TAKE REPORT MIS |
-| 05 | Registration desk — approved / pending / fees / tax | SMAM RTO SHEET |
-| 06 | Market share by year | JAMMU DIVISION RTO SHEET |
-| 07 | Kashmir valley | SRINAGAR DIVISION RTO SHEET |
-| 08 | SMAM vs overall TATA | TATA MOTORS REST DEALER AND SMAM COUNT |
-| 09 | Registrations per consultant | RTO SHEET DEALER CA WISE |
-| 10 | Billing per consultant | BILLING SHEET DEALER CA WISE |
+| Report | Source tab |
+|---|---|
+| BOTH DATA | sales engine — monthly, year by year, models |
+| Perfromance | month × year matrix, last five years |
+| BILLING REGISTER MIS | financiers, consultants, districts, margin |
+| OFF TAKE REPORT MIS | monthly, physical status, ageing, models |
+| SMAM RTO SHEET | registrations per office |
+| JAMMU DIVISION RTO SHEET | market share by year and RTO |
+| SRINAGAR DIVISION RTO SHEET | valley volume and makers |
+| TATA MOTORS REST DEALER AND SMAM COUNT | our share of TATA |
+| RTO SHEET DEALER CA WISE | registrations per consultant |
+| BILLING SHEET DEALER CA WISE | invoices per consultant, cash discount |
 
-Hidden tabs (`Sheet6`, `ORDER VEHICLES`) are deliberately not reported.
+Hidden tabs (`Sheet6`, `ORDER VEHICLES`) are not reported.
 
 ## How it works
 
-`index.html` + `app.js` only — no build step, no server, no workflow.
+`index.html` + `app.js`. No build step, no server, no workflow. On page load the
+browser fetches each tab from the Google Sheet (`export?format=csv&gid=…`, which
+is CORS-enabled) and aggregates in JavaScript. Reload = fresh numbers.
 
-On every page load the browser fetches each visible tab straight from the Google
-Sheet (`export?format=csv&gid=…`, which is CORS-enabled), aggregates the rows in
-JavaScript and renders the page. **Reload = fresh numbers**; nothing to redeploy.
-
-Requirement: the workbook must stay shared as *anyone with the link → viewer*.
+The workbook must stay shared as *anyone with the link → viewer*.
 
 ## Run locally
 
-Open `index.html` through a local server (file:// blocks the sheet fetch):
-
 ```bash
-python -m http.server 8000
-# then http://localhost:8000
+python -m http.server 8000   # then open http://localhost:8000
 ```
+(file:// blocks the sheet fetch)

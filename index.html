@@ -58,6 +58,21 @@ td.barcell span{position:absolute;left:0;top:50%;transform:translateY(-50%);heig
 .loading,.error{background:#fff;border-radius:12px;padding:40px;text-align:center;color:#5B6B82;
   font-size:14px;box-shadow:0 2px 10px rgba(18,35,59,.06)}
 .error{color:#C0392B;text-align:left;line-height:1.6}
+
+.toolbar{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;background:#fff;border-radius:12px;
+  padding:12px 16px;margin-top:14px;box-shadow:0 2px 10px rgba(18,35,59,.06)}
+.field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.field span{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:#7A889C;font-weight:700}
+.field select{appearance:none;background:#F4F7FB url("data:image/svg+xml;utf8,<svg xmlns=%27http://www.w3.org/2000/svg%27 width=%2710%27 height=%276%27><path d=%27M0 0l5 6 5-6z%27 fill=%27%235B6B82%27/></svg>") no-repeat right 12px center;
+  border:1px solid #D7E1EE;border-radius:9px;padding:9px 34px 9px 12px;font-size:13px;font-weight:600;color:#12233B;
+  min-width:190px;cursor:pointer;font-family:inherit}
+.field select:focus{outline:2px solid #0A4C95;outline-offset:1px}
+.field select:hover{border-color:#0A4C95}
+.toolstamp{margin-left:auto;text-align:right;font-size:10.5px;color:#8A97A8;line-height:1.6}
+.toolstamp b{color:#0A4C95;font-size:12px}
+.reporthead{display:flex;align-items:center;gap:12px;margin:18px 2px 0}
+.reporthead .muted{font-size:12px;color:#7A889C}
+.report{display:flex;flex-direction:column;gap:0}
 @media (max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2,.grid2a,.grid3{grid-template-columns:1fr}
   .top{flex-direction:column;align-items:flex-start}.stamp{text-align:left}}
 @media print{body{background:#fff}.card,.top{box-shadow:none}@page{size:A4;margin:10mm}}

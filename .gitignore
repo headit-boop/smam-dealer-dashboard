@@ -7,3 +7,8 @@ metrics.json
 schema.json
 .cprof/
 shot.png
+.cp/
+.c1/
+.c2/
+.c3/
+*.png
