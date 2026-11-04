@@ -2,7 +2,7 @@
  * One report per tab (dropdown), with year / month filters, plus an outlet
  * filter for the two dealer-CA tabs. Data is read live from the Google Sheet.
  */
-const BUILD = "04 Nov 2026 12:06";
+const BUILD = "04 Nov 2026 12:11";
 const SHEET_ID = "15JZOzlxUKAStJpVLxFwRnbLMsHsV1f5B5_NeegUHVxA";
 
 const TABS = {
@@ -14,10 +14,11 @@ const TABS = {
   jammu:    { gid: "1194097827", name: "JAMMU DIVISION RTO SHEET", annual: false },
   srinagar: { gid: "782469727",  name: "SRINAGAR DIVISION RTO SHEET", annual: false },
   tatarest: { gid: "1250415802", name: "TATA MOTORS REST DEALER AND SMAM COUNT", annual: false },
-  rtoca:    { gid: "1456155471", name: "RTO SHEET DEALER CA WISE", annual: false, outlet: true, period: true },
-  billca:   { gid: "353226043",  name: "BILLING SHEET DEALER CA WISE", annual: false, outlet: true, period: true }
+  rtoca:    { gid: "1456155471", name: "RTO SHEET DEALER CA WISE", annual: false, outlet: true },
+  rtocaavg: { gid: "1456155471", name: "RTO CA — OUTLET & CA PERFORMANCE (3M / 6M / 12M)", annual: false, outlet: true, period: true },
+  billca:   { gid: "353226043",  name: "BILLING SHEET DEALER CA WISE", annual: false, outlet: true }
 };
-const ORDER = ["both", "perf", "billing", "offtake", "smam", "jammu", "srinagar", "tatarest", "rtoca", "billca"];
+const ORDER = ["both", "perf", "billing", "offtake", "smam", "jammu", "srinagar", "tatarest", "rtoca", "rtocaavg", "billca"];
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const VALLEY = ["SRINAGAR","ANANTNAG","BARAMULLA","BUDGAM","PULWAMA",
                 "KUPWARA","GANDERBAL","BANDIPORA","KULGAM","SHOPIAN"];
@@ -661,7 +662,95 @@ const VIEWS = {
     return view;
   },
 
-  rtoca(I, y, m, outlet, period) {
+  rtoca(I, y, m, outlet) {
+
+    const map = yearMap(I.caReg, y);
+
+    const ms = monthList(map, m);
+
+    const outlets = mergeCounters(ms, "outlet");
+
+    const scAll = mergeCounters(ms, "sc");
+
+    if (!sum(scAll)) return empty(`RTO SHEET DEALER CA WISE has no registrations for ${y}${m === "all" ? "" : " " + MONTHS[m - 1]}.`,
+
+      `The tab covers ${rangeText(I, "rtoca")}.`);
+
+    const scOut = mergeCounters(ms, "scOut");
+
+    const picked = outlet && outlet !== "all" ? outlet : null;
+
+    const sc = picked
+
+      ? Object.fromEntries(Object.entries(scOut).filter(([k]) => k.startsWith(picked + "||"))
+
+        .map(([k, v]) => [k.split("||")[1], v]))
+
+      : scAll;
+
+    const regs = picked ? sum(sc) : sum(scAll);
+
+    const view = el("div");
+
+    view.appendChild(kpiRow([
+
+      ["Registrations", fmt(regs), null, picked ? `outlet: ${titleCase(picked)}` : "all outlets", "#0A4C95"],
+
+      picked
+
+        ? ["Share of all", pct(sum(outlets) ? regs / sum(outlets) * 100 : null), null, `of ${fmt(sum(outlets))} registrations`, "#128C7E"]
+
+        : ["Outlets", String(Object.keys(outlets).length), null, "in the selection", "#128C7E"],
+
+      picked
+
+        ? ["Outlet", titleCase(picked), null, "selected above", "#6C4AB6"]
+
+        : ["Top outlet", topN(outlets, 1)[0]?.[0] || "–", null, `${fmt(topN(outlets, 1)[0]?.[1] || 0)} registrations`, "#6C4AB6"],
+
+      ["Consultants", String(Object.keys(sc).length), null, picked ? "in this outlet" : "active", "#5B6B82"]
+
+    ]));
+
+    const g = el("div", "grid2");
+
+    g.appendChild(card("Outlet-wise count", "Registrations handled by each outlet.",
+
+      table(["Outlet", "Registrations", "Share"], Object.entries(outlets).sort((a, b) => b[1] - a[1])
+
+        .map(([k, v]) => rw([titleCase(k), fmt(v), pct(regs ? v / sum(outlets) * 100 : null)],
+
+          { cls: picked === k ? "sel" : "" })))));
+
+    g.appendChild(card(`Sales consultants${picked ? " — " + titleCase(picked) : ""}`,
+
+      picked ? "Consultants who registered vehicles at this outlet." : "Top 20 consultants overall.",
+
+      table(["Consultant", "Registrations"], topN(sc, 20).map(([k, v]) => rw([k, fmt(v)])))));
+
+    view.appendChild(g);
+
+    view.appendChild(card("Month by month", y === "all" ? "All years" : `Year ${y}`,
+
+      table(["Month", "Registrations", "Outlets active"], MONTHS.map((mn, i) => {
+
+        const M = map[i + 1] || {};
+
+        return rw([mn, fmt(sum(M.sc || {})), String(Object.keys(M.outlet || {}).length)],
+
+          { cls: m !== "all" && i === m - 1 ? "sel" : "" });
+
+      }))));
+
+    return view;
+
+  },
+
+
+
+
+
+  rtocaavg(I, y, m, outlet, period) {
     const P = periodInfo(I, "rtoca", y, period, m);
     const ms = P.months.map(mm => P.map[String(mm)] || {});
     const sc = mergeCounters(ms, "sc");
@@ -720,63 +809,92 @@ const VIEWS = {
     return view;
   },
 
-  billca(I, y, m, outlet, period) {
-    const P = periodInfo(I, "billca", y, period, m);
-    const ms = P.months.map(mm => P.map[String(mm)] || {});
-    const sc = mergeCounters(ms, "sc");
-    if (!sum(sc)) return empty(`BILLING SHEET DEALER CA WISE has no invoices in that period.`,
-      `The tab covers ${rangeText(I, "billca")}.`);
+  billca(I, y, m, outlet) {
+
+    const map = yearMap(I.caBill, y);
+
+    const ms = monthList(map, m);
+
     const outlets = mergeCounters(ms, "outlet");
+
+    const scAll = mergeCounters(ms, "sc");
+
+    if (!sum(scAll)) return empty(`BILLING SHEET DEALER CA WISE has no invoices for ${y}${m === "all" ? "" : " " + MONTHS[m - 1]}.`,
+
+      `The tab covers ${rangeText(I, "billca")}.`);
+
     const scOut = mergeCounters(ms, "scOut");
-    const discOut = mergeCounters(ms, "discOut");
+
     const discAll = sumField(ms, "disc");
-    const invoices = sum(sc);
+
+    const discOut = mergeCounters(ms, "discOut");
+
     const picked = outlet && outlet !== "all" ? outlet : null;
-    const caPerOutlet = {};
-    for (const k of Object.keys(scOut)) {
-      const [o, c] = k.split("||");
-      (caPerOutlet[o] ||= new Set()).add(c);
-    }
-    const scPicked = picked
+
+    const sc = picked
+
       ? Object.fromEntries(Object.entries(scOut).filter(([k]) => k.startsWith(picked + "||"))
+
         .map(([k, v]) => [k.split("||")[1], v]))
-      : sc;
-    const nM = P.months.length;
+
+      : scAll;
+
+    const invoices = picked ? sum(sc) : sum(scAll);
+
     const disc = picked ? (discOut[picked] || 0) : discAll;
+
     const view = el("div");
+
     view.appendChild(kpiRow([
-      [`Invoices · ${P.label}`, fmt(picked ? sum(scPicked) : invoices), null,
-        picked ? `outlet ${titleCase(picked)}` : `${nM} month${nM > 1 ? "s" : ""}`, "#0A4C95"],
-      ["Average / month", ((picked ? sum(scPicked) : invoices) / nM).toFixed(1), null,
-        `over ${nM} month${nM > 1 ? "s" : ""}`, "#128C7E"],
-      ["Cash discount", inr(disc), null, picked ? "for this outlet" : "in the period", "#E07B00"],
-      ["CAs active", String(Object.keys(scPicked).length), null, "in the period", "#6C4AB6"]
+
+      ["Invoices", fmt(invoices), null, picked ? `outlet: ${titleCase(picked)}` : "all outlets", "#0A4C95"],
+
+      picked
+
+        ? ["Share of all", pct(sum(outlets) ? invoices / sum(outlets) * 100 : null), null, `of ${fmt(sum(outlets))} invoices`, "#128C7E"]
+
+        : ["Outlets", String(Object.keys(outlets).length), null, "in the selection", "#128C7E"],
+
+      ["Cash discount", inr(disc), null, picked ? "for this outlet" : "given", "#E07B00"],
+
+      ["Consultants", String(Object.keys(sc).length), null, picked ? "in this outlet" : "active", "#6C4AB6"]
+
     ]));
+
     const g = el("div", "grid2");
-    g.appendChild(card("Outlet-wise performance",
-      "Invoices, monthly average, cash discount and how many CAs billed each outlet.",
-      table(["Outlet", "Invoices", "Avg/month", "Discount", "CAs", "Share"],
-        Object.entries(outlets).sort((a, b) => b[1] - a[1]).map(([k, v]) => rw([
-          titleCase(k), fmt(v), (v / nM).toFixed(1), inr(discOut[k] || 0),
-          String((caPerOutlet[k] || new Set()).size),
-          pct(invoices ? v / invoices * 100 : null)], { cls: picked === k ? "sel" : "" })))));
-    g.appendChild(card(`CA-wise performance${picked ? " — " + titleCase(picked) : ""}`,
-      picked ? `Only ${titleCase(picked)}: ${fmt(sum(scPicked))} invoices over ${nM} months.`
-        : "Every consultant, all outlets.",
-      table(["Consultant", "Invoices", "Avg/month", "Share"],
-        Object.entries(scPicked).sort((a, b) => b[1] - a[1]).map(([k, v]) => rw([
-          k, fmt(v), (v / nM).toFixed(1),
-          pct((picked ? sum(scPicked) : invoices) ? v / (picked ? sum(scPicked) : invoices) * 100 : null)])))));
+
+    g.appendChild(card("Outlet-wise count", "Invoices billed by each outlet.",
+
+      table(["Outlet", "Invoices", "Cash discount", "Share"], Object.entries(outlets).sort((a, b) => b[1] - a[1])
+
+        .map(([k, v]) => rw([titleCase(k), fmt(v), inr(discOut[k] || 0),
+
+          pct(sum(outlets) ? v / sum(outlets) * 100 : null)], { cls: picked === k ? "sel" : "" })))));
+
+    g.appendChild(card(`Sales consultants${picked ? " — " + titleCase(picked) : ""}`,
+
+      picked ? "Invoices raised by each consultant at this outlet." : "Top 20 consultants overall.",
+
+      table(["Consultant", "Invoices"], topN(sc, 20).map(([k, v]) => rw([k, fmt(v)])))));
+
     view.appendChild(g);
-    view.appendChild(card("Month by month", `${P.cy} · selected period highlighted`,
-      table(["Month", "Invoices", "CAs", "Outlets active", "Cash discount"], MONTHS.map((mn, i) => {
-        const M = P.map[String(i + 1)] || {};
-        return rw([mn, fmt(sum(M.sc || {})), Object.keys(M.sc || {}).length,
-          Object.keys(M.outlet || {}).length, inr(M.disc || 0)],
-          { cls: P.months.includes(i + 1) ? "sel" : "" });
+
+    view.appendChild(card("Month by month", y === "all" ? "All years" : `Year ${y}`,
+
+      table(["Month", "Invoices", "Outlets active", "Cash discount"], MONTHS.map((mn, i) => {
+
+        const M = map[i + 1] || {};
+
+        return rw([mn, fmt(sum(M.sc || {})), String(Object.keys(M.outlet || {}).length), inr(M.disc || 0)],
+
+          { cls: m !== "all" && i === m - 1 ? "sel" : "" });
+
       }))));
+
     return view;
+
   }
+
 };
 
 /* -------------------------------------------------------------------- boot */
