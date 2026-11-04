@@ -1,12 +1,8 @@
 ﻿# SMAM Automart — Dealer Dashboard (GitHub Pages)
 
-Live dashboard for the dealer MIS workbook:
-**https://headit-boop.github.io/smam-dealer-dashboard/**
+**Live dashboard:** https://headit-boop.github.io/smam-dealer-dashboard/
 
-Every 30 minutes a GitHub Action pulls all tabs of the Google Sheet, recomputes
-the numbers and republishes `index.html`. No server, no paid tool.
-
-## Sections
+One page, one section per report tab of the dealer MIS workbook:
 
 | # | Section | Source tab |
 |---|---|---|
@@ -14,32 +10,30 @@ the numbers and republishes `index.html`. No server, no paid tool.
 | 02 | Month × year matrix | Perfromance |
 | 03 | Billing — financiers, consultants, districts | BILLING REGISTER MIS |
 | 04 | Off-take — monthly, status, ageing | OFF TAKE REPORT MIS |
-| 05 | Registration desk | SMAM RTO SHEET |
-| 06 | Market share | JAMMU DIVISION RTO SHEET |
+| 05 | Registration desk — approved / pending / fees / tax | SMAM RTO SHEET |
+| 06 | Market share by year | JAMMU DIVISION RTO SHEET |
 | 07 | Kashmir valley | SRINAGAR DIVISION RTO SHEET |
 | 08 | SMAM vs overall TATA | TATA MOTORS REST DEALER AND SMAM COUNT |
 | 09 | Registrations per consultant | RTO SHEET DEALER CA WISE |
 | 10 | Billing per consultant | BILLING SHEET DEALER CA WISE |
 
-Hidden tabs (`Sheet6`, `ORDER VEHICLES`) are not reported.
+Hidden tabs (`Sheet6`, `ORDER VEHICLES`) are deliberately not reported.
 
 ## How it works
 
-```
-fetch_sheet.py   downloads the workbook as .xlsx (sheet must be link-viewable)
-compute.py       builds metrics.json from the tab CSVs
-render.py        writes index.html (self-contained: inline CSS, no JS deps)
-```
+`index.html` + `app.js` only — no build step, no server, no workflow.
 
-`.github/workflows/refresh.yml` runs the three steps on a schedule and commits
-`index.html` when the numbers change.
+On every page load the browser fetches each visible tab straight from the Google
+Sheet (`export?format=csv&gid=…`, which is CORS-enabled), aggregates the rows in
+JavaScript and renders the page. **Reload = fresh numbers**; nothing to redeploy.
+
+Requirement: the workbook must stay shared as *anyone with the link → viewer*.
 
 ## Run locally
 
+Open `index.html` through a local server (file:// blocks the sheet fetch):
+
 ```bash
-pip install -r requirements.txt
-python fetch_sheet.py
-python compute.py
-python render.py
-start index.html
+python -m http.server 8000
+# then http://localhost:8000
 ```
