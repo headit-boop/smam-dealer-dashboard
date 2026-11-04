@@ -1,6 +1,6 @@
 /* SMAM Automart — dealer dashboard.
- * One report per tab, chosen from a dropdown; year and month filters apply to
- * every report. Data is read from the Google Sheet in the browser on load.
+ * One report per tab (dropdown), with year / month filters, plus an outlet
+ * filter for the two dealer-CA tabs. Data is read live from the Google Sheet.
  */
 const SHEET_ID = "15JZOzlxUKAStJpVLxFwRnbLMsHsV1f5B5_NeegUHVxA";
 
@@ -10,11 +10,11 @@ const TABS = {
   billing:  { gid: "1144355488", name: "BILLING REGISTER MIS", annual: false },
   offtake:  { gid: "1536373224", name: "OFF TAKE REPORT MIS", annual: false },
   smam:     { gid: "402409727",  name: "SMAM RTO SHEET", annual: false },
-  jammu:    { gid: "1194097827", name: "JAMMU DIVISION RTO SHEET", annual: true },
-  srinagar: { gid: "782469727",  name: "SRINAGAR DIVISION RTO SHEET", annual: true },
-  tatarest: { gid: "1250415802", name: "TATA MOTORS REST DEALER AND SMAM COUNT", annual: true },
-  rtoca:    { gid: "1456155471", name: "RTO SHEET DEALER CA WISE", annual: false },
-  billca:   { gid: "353226043",  name: "BILLING SHEET DEALER CA WISE", annual: false }
+  jammu:    { gid: "1194097827", name: "JAMMU DIVISION RTO SHEET", annual: false },
+  srinagar: { gid: "782469727",  name: "SRINAGAR DIVISION RTO SHEET", annual: false },
+  tatarest: { gid: "1250415802", name: "TATA MOTORS REST DEALER AND SMAM COUNT", annual: false },
+  rtoca:    { gid: "1456155471", name: "RTO SHEET DEALER CA WISE", annual: false, outlet: true },
+  billca:   { gid: "353226043",  name: "BILLING SHEET DEALER CA WISE", annual: false, outlet: true }
 };
 const ORDER = ["both", "perf", "billing", "offtake", "smam", "jammu", "srinagar", "tatarest", "rtoca", "billca"];
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -48,7 +48,7 @@ function num(v) {
 function dt(v) {
   const t = s(v); if (!t) return null;
   let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (m) return { y: +m[1], m: +m[2], d: +m[3] };
+  if (m) { const y = +m[1]; return (y < 1990 || y > 2100) ? null : { y, m: +m[2], d: +m[3] }; }
   m = t.match(/^(\d{1,2})[-/ ]([A-Za-z]{3,})[-/ ](\d{2,4})/);
   if (m) {
     const mi = MONTHS.findIndex(x => m[2].toLowerCase().startsWith(x.toLowerCase()));
@@ -56,13 +56,17 @@ function dt(v) {
   }
   m = t.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})/);
   if (m) {
-    let y = +m[3];
-    if (y < 100) y += 2000;
+    let y = +m[3]; if (y < 100) y += 2000;
     if (y < 1990 || y > 2100) return null;
     return { y, m: +m[2], d: +m[1] };
   }
   return null;
 }
+const monthIdx = v => {
+  const t = s(v).slice(0, 3).toLowerCase();
+  const i = MONTHS.findIndex(x => x.toLowerCase() === t);
+  return i >= 0 ? i + 1 : 0;
+};
 const fmt = (x, d = 0) =>
   x == null || x === "" || !isFinite(x) ? "–" : Number(x).toLocaleString("en-IN", { maximumFractionDigits: d, minimumFractionDigits: d });
 const pct = (x, d = 1) => (x == null || !isFinite(x) ? "–" : Number(x).toFixed(d) + "%");
@@ -77,6 +81,12 @@ const add = (o, k, n = 1) => { o[k] = (o[k] || 0) + n; };
 const topN = (o, n) => Object.entries(o || {}).sort((a, b) => b[1] - a[1]).slice(0, n);
 const sum = (o = {}) => Object.values(o || {}).reduce((a, b) => a + b, 0);
 const sum12 = a => (a || []).reduce((x, y) => x + (y || 0), 0);
+const titleCase = t => String(t).toLowerCase().replace(/\b[a-z]/g, c => c.toUpperCase());
+const cleanRto = v => s(v).toUpperCase()
+  .replace(/\(\s*JK\s*-?\s*\d*\s*\)/g, "")
+  .replace(/\s+(ARTO|RTO)\s*$/, "")
+  .replace(/\b(ARTO|RTO)\b/g, "")
+  .replace(/-/g, " ").replace(/\s+/g, " ").trim();
 
 /* -------------------------------------------------------------------- index */
 function buildIndex(T) {
@@ -88,7 +98,7 @@ function buildIndex(T) {
   for (const r of offtakeRaw) { const c = s(r[1]), m = s(r[3]); if (c && m && !modelMap[c]) modelMap[c] = m; }
   for (const r of billingRaw) { const c = s(r[3]), m = s(r[5]); if (c && m && !modelMap[c]) modelMap[c] = m; }
 
-  /* sales, models per year + month */
+  /* sales + models */
   const sales = { RETAIL: {}, WHOLESALE: {}, VAHAN: {} };
   const models = {}, unmapped = {};
   for (const r of rows("both")) {
@@ -97,15 +107,14 @@ function buildIndex(T) {
     const d = dt(r[0]);
     const y = Math.round(num(r[6]) || (d ? d.y : 0));
     if (!y) continue;
-    const mtxt = s(r[5]).slice(0, 3).toLowerCase();
-    let mi = MONTHS.findIndex(x => x.toLowerCase() === mtxt);
-    if (mi < 0 && d) mi = d.m - 1;
-    if (mi < 0) continue;
-    (sales[st][y] ||= new Array(12).fill(0))[mi] += 1;
+    let mi = monthIdx(r[5]);
+    if (!mi && d) mi = d.m;
+    if (!mi) continue;
+    (sales[st][y] ||= new Array(12).fill(0))[mi - 1] += 1;
     if (st === "RETAIL") {
       const model = s(r[2]) || modelMap[s(r[1])] || "Unmapped";
-      const M = ((models[y] ||= {})[mi + 1] ||= {});
-      if (model === "Unmapped") { (unmapped[y] ||= new Array(13).fill(0))[mi + 1] += 1; }
+      const M = ((models[y] ||= {})[mi] ||= {});
+      if (model === "Unmapped") { (unmapped[y] ||= new Array(13).fill(0))[mi] += 1; }
       else add(M, model);
     }
   }
@@ -161,58 +170,72 @@ function buildIndex(T) {
     if (VALLEY.some(v => office.toUpperCase().includes(v))) valley[d.y] = (valley[d.y] || 0) + 1;
   }
 
-  /* jammu market */
+  /* jammu — now month aware */
   const jammu = {};
   for (const r of rows("jammu")) {
     const y = Math.round(num(r[5]) || 0), c = num(r[4]) || 0;
-    if (!y || !c) continue;
-    const Y = (jammu[y] ||= { industry: 0, tata: 0, rto: {}, makers: {} });
-    Y.industry += c;
+    const m = monthIdx(r[2]) || Math.round(num(r[3]) || 0);
+    if (!y || !c || !m) continue;
+    const M = (((jammu[y] ||= {})[m]) ||= { industry: 0, tata: 0, rto: {}, makers: {} });
+    M.industry += c;
     const isTata = s(r[0]).toUpperCase().startsWith("TATA");
-    if (isTata) Y.tata += c;
-    add(Y.makers, s(r[0]).toUpperCase() || "Unknown", c);
+    if (isTata) M.tata += c;
+    add(M.makers, s(r[0]).toUpperCase() || "Unknown", c);
     const rto = s(r[1]).toUpperCase();
-    if (rto) {
-      const R = (Y.rto[rto] ||= { ind: 0, tata: 0 });
-      R.ind += c; if (isTata) R.tata += c;
-    }
+    if (rto) { const R = (M.rto[rto] ||= { ind: 0, tata: 0 }); R.ind += c; if (isTata) R.tata += c; }
   }
 
-  /* srinagar */
-  const srin = { industry: 0, tata: 0, rto: {}, makers: {} };
+  /* srinagar — month aware */
+  const srin = { months: {} };
   for (const r of rows("srinagar")) {
     const c = num(r[3]) || 0;
-    srin.industry += c;
+    const m = monthIdx(r[2]) || 0;
+    if (!c) continue;
+    const M = ((srin.months[m]) ||= { industry: 0, tata: 0, rto: {}, makers: {} });
+    M.industry += c;
     const maker = s(r[0]).toUpperCase();
-    add(srin.makers, maker, c);
-    add(srin.rto, s(r[1]).toUpperCase(), c);
-    if (maker.startsWith("TATA")) srin.tata += c;
+    add(M.makers, maker, c);
+    add(M.rto, s(r[1]).toUpperCase(), c);
+    if (maker.startsWith("TATA")) M.tata += c;
   }
 
-  /* tata rest dealer */
+  /* tata rest dealer — month aware */
   const tatarest = {};
   for (const r of rows("tatarest")) {
-    const y = Math.round(num(r[4]) || 0), c = num(r[3]) || 0;
+    const c = num(r[3]) || 0;
+    const d = dt(r[2]);
+    const y = Math.round(num(r[4]) || (d ? d.y : 0));
+    const m = d ? d.m : monthIdx(r[2]);
     const st = s(r[5]).toUpperCase();
-    if (!y) continue;
-    const Y = (tatarest[y] ||= { smam: 0, overall: 0, rto: {} });
-    if (st === "SMAM COUNT") { Y.smam += c; add(Y.rto, s(r[1]).toUpperCase() || "Unknown", c); }
-    else if (st === "OVER ALL COUNT") Y.overall += c;
+    if (!y || !m) continue;
+    const M = (((tatarest[y] ||= {})[m]) ||= { smam: 0, overall: 0, rto: {} });
+    const rto = cleanRto(r[1]) || "Unknown";
+    const R = (M.rto[rto] ||= { smam: 0, overall: 0 });
+    if (st === "SMAM COUNT") { M.smam += c; R.smam += c; }
+    else if (st === "OVER ALL COUNT") { M.overall += c; R.overall += c; }
   }
 
-  /* CA tabs */
-  const caReg = {}, caBill = {};
+  /* dealer CA tabs (both have an OUTLET column) */
+  const caReg = {}, caBill = {}, outlets = new Set();
   for (const r of rows("rtoca")) {
     const d = dt(r[0]); if (!d) continue;
-    const M = (((caReg[d.y] ||= {})[d.m]) ||= { sc: {}, outlet: {} });
-    add(M.sc, s(r[6]).toUpperCase() || "Not recorded");
-    add(M.outlet, s(r[5]).toUpperCase() || "Not recorded");
+    const M = (((caReg[d.y] ||= {})[d.m]) ||= { sc: {}, outlet: {}, scOut: {} });
+    const out = s(r[5]).toUpperCase();
+    if (!out || out === "0") continue;
+    const sc = s(r[6]).toUpperCase() || "Not recorded";
+    add(M.sc, sc); add(M.outlet, out); add(M.scOut, `${out}||${sc}`);
+    outlets.add(out);
   }
   for (const r of rows("billca")) {
     const d = dt(r[0]); if (!d) continue;
-    const M = (((caBill[d.y] ||= {})[d.m]) ||= { sc: {}, disc: 0 });
-    add(M.sc, s(r[7]).toUpperCase() || "Not recorded");
-    M.disc += num(r[8]) || 0;
+    const M = (((caBill[d.y] ||= {})[d.m]) ||= { sc: {}, outlet: {}, scOut: {}, disc: 0, discOut: {} });
+    const out = (s(r[6]).toUpperCase() || "").replace("#N/A", "NOT MAPPED");
+    if (!out || out === "0") continue;
+    const sc = s(r[7]).toUpperCase() || "Not recorded";
+    const disc = num(r[8]) || 0;
+    add(M.sc, sc); add(M.outlet, out); add(M.scOut, `${out}||${sc}`);
+    M.disc += disc; add(M.discOut, out, disc);
+    outlets.add(out);
   }
 
   function span(map) {
@@ -224,14 +247,14 @@ function buildIndex(T) {
     keys.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     return { from: keys[0], to: keys[keys.length - 1] };
   }
-  function yearSpan(map) {
+  const yearly = map => {
     const ys = Object.keys(map).map(Number).sort((a, b) => a - b);
     return ys.length ? { from: [ys[0], 0], to: [ys[ys.length - 1], 0] } : null;
-  }
+  };
   const ranges = {
     both: span(sales.RETAIL), billing: span(billing), offtake: span(offtake),
     smam: span(smam), rtoca: span(caReg), billca: span(caBill),
-    jammu: yearSpan(jammu), tatarest: yearSpan(tatarest)
+    jammu: span(jammu), tatarest: span(tatarest)
   };
 
   const years = [...new Set([...Object.keys(sales.RETAIL), ...Object.keys(billing),
@@ -240,7 +263,8 @@ function buildIndex(T) {
     .sort((a, b) => a - b);
 
   return { sales, models, unmapped, billing, offtake, offtakeModel, ageY, ageYM,
-           smam, jammu, srinagar: srin, tatarest, caReg, caBill, valley, years, ranges };
+           smam, jammu, srinagar: srin, tatarest, caReg, caBill, valley, years, ranges,
+           outlets: [...outlets].sort() };
 }
 
 /* --------------------------------------------------------------- aggregates */
@@ -264,21 +288,8 @@ function mergeCounters(list, f) {
   for (const x of list) for (const [k, v] of Object.entries(x[f] || {})) out[k] = (out[k] || 0) + v;
   return out;
 }
-function jammuRto(I, year) {
-  const Y = I.jammu[year]; if (!Y) return [];
-  const own = {};
-  for (const M of Object.values(I.smam[year] || {}))
-    for (const [office, n] of Object.entries(M.office || {})) {
-      const key = office.toUpperCase().replace(/\(\s*JK\s*-?\s*\d*\s*\)/g, "")
-        .replace(/\s+(ARTO|RTO)\s*$/, "").replace(/\b(ARTO|RTO)\b/g, "")
-        .replace(/-/g, " ").replace(/\s+/g, " ").trim();
-      if (key) add(own, key, n);
-    }
-  return Object.entries(Y.rto).map(([rto, v]) => ({
-    rto, industry: v.ind, tata: v.tata, smam: own[rto] || 0,
-    tataShare: v.ind ? v.tata / v.ind * 100 : null,
-    smamOfTata: v.tata ? (own[rto] || 0) / v.tata * 100 : null
-  })).sort((a, b) => b.industry - a.industry);
+function monthTotals(map, m) {
+  return m === "all" ? Object.values(map).reduce((a, x) => mergeDeep(a, x), {}) : (map[String(m)] || {});
 }
 
 /* ------------------------------------------------------------------ render */
@@ -337,6 +348,7 @@ function rangeText(I, key) {
   const one = ([y, m]) => (m ? `${MONTHS[m - 1]} ${y}` : String(y));
   return `${one(r.from)} – ${one(r.to)}`;
 }
+const restOf = (overall, smam) => (overall == null || smam == null || overall < smam) ? null : overall - smam;
 function empty(msg, sub) {
   return card("No rows for this selection", msg + (sub ? " " + sub : ""), el("div", "empty", ""));
 }
@@ -348,24 +360,17 @@ const VIEWS = {
     const yrs = y === "all" ? I.years : [y];
     const has = yrs.some(yy => sum12(R[yy]) + sum12(W[yy]) + sum12(V[yy]));
     if (!has) return empty(`BOTH DATA has no sales for ${y}.`, `The tab covers ${rangeText(I, "both")}.`);
-
     const pick = (S, yy) => (m === "all" ? sum12(S[yy]) : ((S[yy] || [])[m - 1] || 0));
-    const totAll = (S, yy) => sum12(S[yy]);
-    const view = el("div");
     const lastY = yrs[yrs.length - 1];
     const label = m === "all" ? `${lastY}` : `${MONTHS[m - 1]} ${lastY}`;
-
+    const view = el("div");
     view.appendChild(kpiRow([
-      ["Retail", fmt(y === "all" ? yrs.reduce((a, yy) => a + pick(R, yy), 0) : pick(R, lastY)),
-        null, `${label} units delivered`, "#0A4C95"],
-      ["Wholesale", fmt(y === "all" ? yrs.reduce((a, yy) => a + pick(W, yy), 0) : pick(W, lastY)),
-        null, `${label} units billed`, "#128C7E"],
-      ["VAHAN", fmt(y === "all" ? yrs.reduce((a, yy) => a + pick(V, yy), 0) : pick(V, lastY)),
-        null, `${label} registrations`, "#6C4AB6"],
-      ["Retail growth", pct(growth(totAll(R, lastY), totAll(R, lastY - 1)) * 100),
-        growth(totAll(R, lastY), totAll(R, lastY - 1)) * 100, "vs previous year", "#C0392B"]
+      ["Retail", fmt(pick(R, lastY)), null, `${label} units delivered`, "#0A4C95"],
+      ["Wholesale", fmt(pick(W, lastY)), null, `${label} units billed`, "#128C7E"],
+      ["VAHAN", fmt(pick(V, lastY)), null, `${label} registrations`, "#6C4AB6"],
+      ["Retail growth", pct(growth(sum12(R[lastY]), sum12(R[lastY - 1])) * 100),
+        growth(sum12(R[lastY]), sum12(R[lastY - 1])) * 100, "vs previous year", "#C0392B"]
     ]));
-
     const g1 = el("div", "grid2a");
     g1.appendChild(card(`Retail · wholesale · VAHAN — ${lastY}`,
       m === "all" ? "Monthly volumes from BOTH DATA." : `${MONTHS[m - 1]} is highlighted in the table.`,
@@ -376,33 +381,26 @@ const VIEWS = {
       ])));
     g1.appendChild(card("Monthly detail", `Year ${lastY} · retail last year alongside`,
       table(["Month", "Retail", "Wholesale", "VAHAN", { v: "Retail LY", cls: "dim" }],
-        MONTHS.map((mn, i) => rw([mn,
-          (R[lastY] || [])[i] || "–", (W[lastY] || [])[i] || "–", (V[lastY] || [])[i] || "–",
-          { v: (R[lastY - 1] || [])[i] || "–", cls: "dim" }],
+        MONTHS.map((mn, i) => rw([mn, (R[lastY] || [])[i] || "–", (W[lastY] || [])[i] || "–",
+          (V[lastY] || [])[i] || "–", { v: (R[lastY - 1] || [])[i] || "–", cls: "dim" }],
           { cls: m !== "all" && i === m - 1 ? "sel" : "" })))));
     view.appendChild(g1);
-
     const g2 = el("div", "grid2");
     g2.appendChild(card("Year by year", "Every year present in the data.",
       table(["Year", "Retail", "Wholesale", "VAHAN", "Growth"],
         I.years.slice().reverse().map(yy => {
-          const g = growth(totAll(R, yy), totAll(R, yy - 1));
-          return rw([String(yy) + (yy === lastY ? " YTD" : ""), totAll(R, yy), totAll(W, yy),
-            totAll(V, yy) || "–",
+          const g = growth(sum12(R[yy]), sum12(R[yy - 1]));
+          return rw([String(yy) + (yy === lastY ? " YTD" : ""), sum12(R[yy]), sum12(W[yy]), sum12(V[yy]) || "–",
             { v: g == null ? "–" : pct(g * 100), cls: g == null ? "dim" : (g >= 0 ? "pos" : "neg") }],
             { cls: y === yy ? "sel" : "" });
         }))));
-
-    const mm = m === "all" ? null : m;
     let models = {};
     if (y === "all") for (const yy of I.years) for (const [k, v] of Object.entries(I.models[yy] || {}))
-      if (!mm || +k === mm) mergeDeep(models, v);
-    else for (const [k, v] of Object.entries(I.models[lastY] || {})) if (!mm || +k === mm) mergeDeep(models, v);
-
+      if (m === "all" || +k === m) mergeDeep(models, v);
+    else for (const [k, v] of Object.entries(I.models[lastY] || {})) if (m === "all" || +k === m) mergeDeep(models, v);
     let unm = 0;
-    if (y === "all") for (const yy of I.years) unm += mm ? (I.unmapped[yy] || [])[mm] || 0 : sum12(I.unmapped[yy]);
-    else unm = mm ? (I.unmapped[lastY] || [])[mm] || 0 : sum12(I.unmapped[lastY]);
-
+    if (y === "all") for (const yy of I.years) unm += m === "all" ? sum12(I.unmapped[yy]) : (I.unmapped[yy] || [])[m] || 0;
+    else unm = m === "all" ? sum12(I.unmapped[lastY]) : (I.unmapped[lastY] || [])[m] || 0;
     const modelTotal = sum(models) || 1;
     g2.appendChild(card(`Models — ${label}`,
       `${fmt(modelTotal)} retail units with a model` + (unm ? ` · ${fmt(unm)} rows carry no model` : ""),
@@ -482,7 +480,6 @@ const VIEWS = {
     if (y === "all") for (const yy of I.years) for (const [k, v] of Object.entries(I.ageYM[yy] || {}))
       if (m === "all" || +k === m) mergeDeep(age, v);
     else for (const [k, v] of Object.entries(I.ageYM[y] || {})) if (m === "all" || +k === m) mergeDeep(age, v);
-
     const view = el("div");
     view.appendChild(kpiRow([
       ["Off-take", fmt(count), null, "TM invoices", "#E07B00"],
@@ -510,8 +507,7 @@ const VIEWS = {
       `The tab covers ${rangeText(I, "smam")}.`);
     const appr = sumField(ms, "appr"), pend = sumField(ms, "pend");
     const fees = sumField(ms, "fees"), tax = sumField(ms, "tax");
-    const office = mergeCounters(ms, "office");
-    const officeAppr = mergeCounters(ms, "officeAppr");
+    const office = mergeCounters(ms, "office"), officeAppr = mergeCounters(ms, "officeAppr");
     const view = el("div");
     view.appendChild(kpiRow([
       ["Registrations", fmt(reg), null, "in the selection", "#0A4C95"],
@@ -521,140 +517,216 @@ const VIEWS = {
     ]));
     view.appendChild(card("Registrations per office", "Top 25 offices in the selection.",
       table(["Office", "Regs", "Approved", "Pending"],
-        topN(office, 25).map(([name, n]) => {
-          const a = officeAppr[name] || 0;
-          return rw([name, fmt(n), fmt(a), fmt(n - a)]);
-        }))));
+        topN(office, 25).map(([name, n]) => rw([name, fmt(n), fmt(officeAppr[name] || 0),
+          fmt(n - (officeAppr[name] || 0))])))));
     view.appendChild(card("Month by month", y === "all" ? "All years" : `Year ${y}`,
       table(["Month", "Regs", "Approved", "Pending", "Fees", "MV tax"], MONTHS.map((mn, i) =>
         rw([mn, fmt((map[i + 1] || {}).reg || 0), fmt((map[i + 1] || {}).appr || 0),
           fmt((map[i + 1] || {}).pend || 0), inr((map[i + 1] || {}).fees || 0),
-          inr((map[i + 1] || {}).tax || 0)],
-          { cls: m !== "all" && i === m - 1 ? "sel" : "" })))));
+          inr((map[i + 1] || {}).tax || 0)], { cls: m !== "all" && i === m - 1 ? "sel" : "" })))));
     return view;
   },
 
-  jammu(I, y) {
+  jammu(I, y, m) {
     const cy = y === "all" ? I.years.at(-1) : y;
-    const Y = I.jammu[cy];
-    if (!Y) return empty(`JAMMU DIVISION RTO SHEET has no data for ${cy}.`,
-      `The tab covers ${rangeText(I, "jammu")}.`);
+    const ymap = I.jammu[cy];
+    if (!ymap) return empty(`JAMMU DIVISION RTO SHEET has no data for ${cy}.`, `The tab covers ${rangeText(I, "jammu")}.`);
+    const cur = monthTotals(ymap, m);
     const view = el("div");
     view.appendChild(kpiRow([
-      ["Industry", fmt(Y.industry), null, `PV registrations ${cy}`, "#0A4C95"],
-      ["TATA", fmt(Y.tata), null, "units", "#128C7E"],
-      ["TATA share", pct(Y.industry ? Y.tata / Y.industry * 100 : null), null, "of industry", "#6C4AB6"],
-      ["Largest rival", Object.entries(Y.makers).filter(([k]) => !k.startsWith("TATA"))
+      ["Industry", fmt(cur.industry || 0), null, m === "all" ? `PV registrations ${cy}` : `${MONTHS[m - 1]} ${cy}`, "#0A4C95"],
+      ["TATA", fmt(cur.tata || 0), null, "units", "#128C7E"],
+      ["TATA share", pct(cur.industry ? cur.tata / cur.industry * 100 : null), null, "of industry", "#6C4AB6"],
+      ["Largest rival", Object.entries(cur.makers || {}).filter(([k]) => !k.startsWith("TATA"))
         .sort((a, b) => b[1] - a[1])[0]?.[0] || "–", null, "other maker", "#C0392B"]
     ]));
-    view.appendChild(card("Market by year", "Industry vs TATA vs our registrations. (This tab is yearly — the month filter does not apply.)",
-      table(["Year", "Industry", "TATA", "SMA", "TATA share", "SMA of TATA"], I.years.map(yy => {
-        const M = I.jammu[yy]; if (!M) return rw([yy, "–", "–", "–", "–", "–"]);
-        const own = Object.values(I.smam[yy] || {}).reduce((a, x) => a + x.reg, 0);
-        return rw([yy, fmt(M.industry), fmt(M.tata), fmt(own),
-          pct(M.industry ? M.tata / M.industry * 100 : null),
-          pct(M.tata ? own / M.tata * 100 : null)], { cls: yy === cy ? "sel" : "" });
+    view.appendChild(card(`Month by month — ${cy}`, "Industry and TATA per month. Pick a month above to drill in.",
+      table(["Month", "Industry", "TATA", "TATA share"], MONTHS.map((mn, i) => {
+        const M = ymap[i + 1] || {};
+        return rw([mn, fmt(M.industry || 0), fmt(M.tata || 0),
+          pct(M.industry ? M.tata / M.industry * 100 : null)],
+          { cls: m !== "all" && i === m - 1 ? "sel" : "" });
       }))));
-    view.appendChild(card(`RTO / ARTO — ${cy}`, "Volume, TATA share and our share in each office.",
-      table(["RTO", "Industry", "TATA", "SMA", "TATA share", "SMA of TATA"],
-        jammuRto(I, cy).slice(0, 15).map(r => rw([r.rto, fmt(r.industry), fmt(r.tata), fmt(r.smam),
-          pct(r.tataShare), pct(r.smamOfTata)])))));
-    view.appendChild(card("Makers", "Who leads the Jammu division.", barsTable(topN(Y.makers, 12))));
+    const rto = Object.entries(cur.rto || {}).map(([k, v]) => ({
+      rto: k, industry: v.ind, tata: v.tata,
+      tataShare: v.ind ? v.tata / v.ind * 100 : null
+    })).sort((a, b) => b.industry - a.industry);
+    view.appendChild(card(`RTO / ARTO — ${cy}${m === "all" ? "" : " · " + MONTHS[m - 1]}`,
+      "Volume and TATA share in each office for the selection.",
+      table(["RTO", "Industry", "TATA", "TATA share"],
+        rto.slice(0, 15).map(r => rw([r.rto, fmt(r.industry), fmt(r.tata), pct(r.tataShare)])))));
+    view.appendChild(card("Makers", "Who leads the Jammu division in the selection.",
+      barsTable(topN(cur.makers || {}, 12))));
     return view;
   },
 
-  srinagar(I) {
+  srinagar(I, y, m) {
     const S = I.srinagar;
-    if (!S.industry) return empty("SRINAGAR DIVISION RTO SHEET is empty.");
+    const cur = monthTotals(S.months, m);
+    if (!cur.industry) return empty(`SRINAGAR DIVISION RTO SHEET has no data for ${m === "all" ? "this year" : MONTHS[m - 1]}.`,
+      `The tab covers ${rangeText(I, "jammu") ? "" : ""}Jan–Dec 2026.`);
     const view = el("div");
     view.appendChild(kpiRow([
-      ["Industry", fmt(S.industry), null, "PV registrations", "#0A4C95"],
-      ["TATA", fmt(S.tata), null, "units", "#128C7E"],
-      ["TATA share", pct(S.industry ? S.tata / S.industry * 100 : null), null, "of industry", "#6C4AB6"],
-      ["Our valley registrations", fmt(sum(I.valley)), null, "SMAM RTO sheet", "#C0392B"]
+      ["Industry", fmt(cur.industry), null, m === "all" ? "PV registrations 2026" : `${MONTHS[m - 1]} 2026`, "#0A4C95"],
+      ["TATA", fmt(cur.tata), null, "units", "#128C7E"],
+      ["TATA share", pct(cur.industry ? cur.tata / cur.industry * 100 : null), null, "of industry", "#6C4AB6"],
+      ["Our valley registrations", fmt(sum(I.valley)), null, "SMAM RTO sheet (year)", "#C0392B"]
     ]));
+    view.appendChild(card("Month by month — 2026", "Industry and TATA per month.",
+      table(["Month", "Industry", "TATA", "TATA share"], MONTHS.map((mn, i) => {
+        const M = S.months[i + 1] || {};
+        return rw([mn, fmt(M.industry || 0), fmt(M.tata || 0),
+          pct(M.industry ? M.tata / M.industry * 100 : null)],
+          { cls: m !== "all" && i === m - 1 ? "sel" : "" });
+      }))));
     const g = el("div", "grid2");
-    g.appendChild(card("By RTO", "Industry volume per office. (Yearly tab — month filter does not apply.)",
-      table(["RTO", "Units", "Share"], topN(S.rto, 15).map(([k, v]) => rw([k, fmt(v),
-        pct(S.industry ? v / S.industry * 100 : null)])))));
-    g.appendChild(card("Maker mix", "Who sells in the valley.", barsTable(topN(S.makers, 12))));
+    g.appendChild(card(`By RTO — ${m === "all" ? "2026" : MONTHS[m - 1] + " 2026"}`, "Industry volume per office.",
+      table(["RTO", "Units", "Share"], topN(cur.rto, 15).map(([k, v]) => rw([k, fmt(v),
+        pct(cur.industry ? v / cur.industry * 100 : null)])))));
+    g.appendChild(card("Maker mix", "Who sells in the valley.", barsTable(topN(cur.makers, 12))));
     view.appendChild(g);
     return view;
   },
 
-  tatarest(I, y) {
+  tatarest(I, y, m) {
     const cy = y === "all" ? I.years.at(-1) : y;
-    const Y = I.tatarest[cy];
-    if (!Y) return empty(`TATA MOTORS REST DEALER AND SMAM COUNT has no data for ${cy}.`,
+    const ymap = I.tatarest[cy];
+    if (!ymap) return empty(`TATA MOTORS REST DEALER AND SMAM COUNT has no data for ${cy}.`,
       `The tab covers ${rangeText(I, "tatarest")}.`);
+    const cur = monthTotals(ymap, m);
+    const rest = (cur.overall || 0) - (cur.smam || 0);
     const view = el("div");
     view.appendChild(kpiRow([
-      ["SMAM count", fmt(Y.smam), null, `${cy} registrations`, "#0A4C95"],
-      ["Overall TATA", fmt(Y.overall), null, "same offices", "#128C7E"],
-      ["Our share", pct(Y.overall ? Y.smam / Y.overall * 100 : null), null, "of TATA volume", "#C0392B"],
-      ["Offices", String(Object.keys(Y.rto).length), null, "with our volume", "#5B6B82"]
+      ["Overall count", fmt(cur.overall || 0), null, m === "all" ? `${cy} all TATA` : `${MONTHS[m - 1]} ${cy}`, "#0A4C95"],
+      ["SMAM count", fmt(cur.smam || 0), null, "our registrations", "#128C7E"],
+      ["Rest dealer count", fmt(rest), null, "other TATA dealers", "#E07B00"],
+      ["SMAM market share", pct(cur.overall ? cur.smam / cur.overall * 100 : null), null, "of overall TATA", "#C0392B"]
     ]));
-    view.appendChild(card("Year by year", "SMAM vs overall TATA count.",
-      table(["Year", "SMAM", "Overall TATA", "Share"], I.years.map(yy => {
-        const T = I.tatarest[yy]; if (!T) return rw([yy, "–", "–", "–"]);
-        return rw([yy, fmt(T.smam), fmt(T.overall), pct(T.overall ? T.smam / T.overall * 100 : null)],
-          { cls: yy === cy ? "sel" : "" });
-      }))));
-    view.appendChild(card(`Offices — ${cy}`, "Our registrations by RTO/ARTO.",
-      table(["RTO", "SMAM", "Share of our total"],
-        topN(Y.rto, 20).map(([k, v]) => rw([k, fmt(v), pct(Y.smam ? v / Y.smam * 100 : null)])))));
+    view.appendChild(card(`Month by month — ${cy}`,
+      "Overall TATA = SMAM + rest dealers. A month shown as – means the overall TATA count is missing in that tab.",
+      table(["Month", "Overall count", "SMAM count", "Rest dealer", "SMAM share", "Rest dealer share"],
+        MONTHS.map((mn, i) => {
+          const M = ymap[i + 1] || { smam: 0, overall: 0 };
+          const r = restOf(M.overall, M.smam);
+          return rw([mn, fmt(M.overall || 0), fmt(M.smam || 0), r == null ? "–" : fmt(r),
+            pct(M.overall ? M.smam / M.overall * 100 : null),
+            pct(r == null ? null : r / M.overall * 100)],
+            { cls: m !== "all" && i === m - 1 ? "sel" : "" });
+        }).concat([`<tr class="tot">${rw(["TOTAL",
+          fmt(Object.values(ymap).reduce((a, x) => a + (x.overall || 0), 0)),
+          fmt(Object.values(ymap).reduce((a, x) => a + (x.smam || 0), 0)),
+          fmt(Object.values(ymap).reduce((a, x) => a + (x.overall || 0) - (x.smam || 0), 0)),
+          pct((() => { const o = Object.values(ymap).reduce((a, x) => a + (x.overall || 0), 0);
+            const sm = Object.values(ymap).reduce((a, x) => a + (x.smam || 0), 0);
+            return o ? sm / o * 100 : null; })()),
+          pct((() => { const o = Object.values(ymap).reduce((a, x) => a + (x.overall || 0), 0);
+            const sm = Object.values(ymap).reduce((a, x) => a + (x.smam || 0), 0);
+            return o ? (o - sm) / o * 100 : null; })())])}</tr>`]))));
+    const rows = Object.entries(cur.rto || {}).map(([rto, v]) => {
+      const r = restOf(v.overall, v.smam);
+      return { rto, overall: v.overall || 0, smam: v.smam || 0, rest: r,
+        smamShare: v.overall ? v.smam / v.overall * 100 : null,
+        restShare: r == null ? null : r / v.overall * 100 };
+    }).sort((a, b) => b.overall - a.overall);
+    view.appendChild(card(`By RTO / ARTO — ${cy}${m === "all" ? "" : " · " + MONTHS[m - 1]}`,
+      "Split of overall TATA volume between our dealership and other TATA dealers.",
+      table(["RTO", "Overall", "SMAM", "Rest dealer", "SMAM share", "Rest share"],
+        rows.slice(0, 20).map(r => rw([r.rto, fmt(r.overall), fmt(r.smam),
+          r.rest == null ? "–" : fmt(r.rest), pct(r.smamShare), pct(r.restShare)])))));
     return view;
   },
 
-  rtoca(I, y, m) {
+  rtoca(I, y, m, outlet) {
     const map = yearMap(I.caReg, y);
     const ms = monthList(map, m);
-    const sc = mergeCounters(ms, "sc"), outlet = mergeCounters(ms, "outlet");
-    if (!sum(sc)) return empty(`RTO SHEET DEALER CA WISE has no registrations for ${y}${m === "all" ? "" : " " + MONTHS[m - 1]}.`,
+    const outlets = mergeCounters(ms, "outlet");
+    const scAll = mergeCounters(ms, "sc");
+    if (!sum(scAll)) return empty(`RTO SHEET DEALER CA WISE has no registrations for ${y}${m === "all" ? "" : " " + MONTHS[m - 1]}.`,
       `The tab covers ${rangeText(I, "rtoca")}.`);
+    const scOut = mergeCounters(ms, "scOut");
+    const picked = outlet && outlet !== "all" ? outlet : null;
+    const sc = picked
+      ? Object.fromEntries(Object.entries(scOut).filter(([k]) => k.startsWith(picked + "||"))
+        .map(([k, v]) => [k.split("||")[1], v]))
+      : scAll;
+    const regs = picked ? sum(sc) : sum(scAll);
     const view = el("div");
     view.appendChild(kpiRow([
-      ["Registrations", fmt(sum(sc)), null, "handled", "#0A4C95"],
-      ["Consultants", String(Object.keys(sc).length), null, "active", "#128C7E"],
-      ["Top consultant", Object.entries(sc).sort((a, b) => b[1] - a[1])[0]?.[0] || "–", null, "by registrations", "#6C4AB6"],
-      ["Outlets", String(Object.keys(outlet).length), null, "used", "#5B6B82"]
+      ["Registrations", fmt(regs), null, picked ? `outlet: ${titleCase(picked)}` : "all outlets", "#0A4C95"],
+      picked
+        ? ["Share of all", pct(sum(outlets) ? regs / sum(outlets) * 100 : null), null, `of ${fmt(sum(outlets))} registrations`, "#128C7E"]
+        : ["Outlets", String(Object.keys(outlets).length), null, "in the selection", "#128C7E"],
+      picked
+        ? ["Outlet", titleCase(picked), null, "selected above", "#6C4AB6"]
+        : ["Top outlet", topN(outlets, 1)[0]?.[0] || "–", null, `${fmt(topN(outlets, 1)[0]?.[1] || 0)} registrations`, "#6C4AB6"],
+      ["Consultants", String(Object.keys(sc).length), null, picked ? "in this outlet" : "active", "#5B6B82"]
     ]));
     const g = el("div", "grid2");
-    g.appendChild(card("Registrations per consultant", "Top 20.", barsTable(topN(sc, 20))));
-    g.appendChild(card("By outlet", "Where they were registered.", barsTable(topN(outlet, 10))));
+    g.appendChild(card("Outlet-wise count", "Registrations handled by each outlet.",
+      table(["Outlet", "Registrations", "Share"], Object.entries(outlets).sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => rw([titleCase(k), fmt(v), pct(regs ? v / sum(outlets) * 100 : null)],
+          { cls: picked === k ? "sel" : "" })))));
+    g.appendChild(card(`Sales consultants${picked ? " — " + titleCase(picked) : ""}`,
+      picked ? "Consultants who registered vehicles at this outlet." : "Top 20 consultants overall.",
+      table(["Consultant", "Registrations"], topN(sc, 20).map(([k, v]) => rw([k, fmt(v)])))));
     view.appendChild(g);
     view.appendChild(card("Month by month", y === "all" ? "All years" : `Year ${y}`,
-      table(["Month", "Registrations"], MONTHS.map((mn, i) =>
-        rw([mn, fmt(sum((map[i + 1] || {}).sc || {}))],
-          { cls: m !== "all" && i === m - 1 ? "sel" : "" })))));
+      table(["Month", "Registrations", "Outlets active"], MONTHS.map((mn, i) => {
+        const M = map[i + 1] || {};
+        return rw([mn, fmt(sum(M.sc || {})), String(Object.keys(M.outlet || {}).length)],
+          { cls: m !== "all" && i === m - 1 ? "sel" : "" });
+      }))));
     return view;
   },
 
-  billca(I, y, m) {
+  billca(I, y, m, outlet) {
     const map = yearMap(I.caBill, y);
     const ms = monthList(map, m);
-    const sc = mergeCounters(ms, "sc"), disc = sumField(ms, "disc");
-    if (!sum(sc)) return empty(`BILLING SHEET DEALER CA WISE has no invoices for ${y}${m === "all" ? "" : " " + MONTHS[m - 1]}.`,
+    const outlets = mergeCounters(ms, "outlet");
+    const scAll = mergeCounters(ms, "sc");
+    if (!sum(scAll)) return empty(`BILLING SHEET DEALER CA WISE has no invoices for ${y}${m === "all" ? "" : " " + MONTHS[m - 1]}.`,
       `The tab covers ${rangeText(I, "billca")}.`);
+    const scOut = mergeCounters(ms, "scOut");
+    const discAll = sumField(ms, "disc");
+    const discOut = mergeCounters(ms, "discOut");
+    const picked = outlet && outlet !== "all" ? outlet : null;
+    const sc = picked
+      ? Object.fromEntries(Object.entries(scOut).filter(([k]) => k.startsWith(picked + "||"))
+        .map(([k, v]) => [k.split("||")[1], v]))
+      : scAll;
+    const invoices = picked ? sum(sc) : sum(scAll);
+    const disc = picked ? (discOut[picked] || 0) : discAll;
     const view = el("div");
     view.appendChild(kpiRow([
-      ["Invoices", fmt(sum(sc)), null, "billed", "#0A4C95"],
-      ["Consultants", String(Object.keys(sc).length), null, "active", "#128C7E"],
-      ["Cash discount", inr(disc), null, "given", "#E07B00"],
-      ["Top consultant", Object.entries(sc).sort((a, b) => b[1] - a[1])[0]?.[0] || "–", null, "by invoices", "#6C4AB6"]
+      ["Invoices", fmt(invoices), null, picked ? `outlet: ${titleCase(picked)}` : "all outlets", "#0A4C95"],
+      picked
+        ? ["Share of all", pct(sum(outlets) ? invoices / sum(outlets) * 100 : null), null, `of ${fmt(sum(outlets))} invoices`, "#128C7E"]
+        : ["Outlets", String(Object.keys(outlets).length), null, "in the selection", "#128C7E"],
+      ["Cash discount", inr(disc), null, picked ? "for this outlet" : "given", "#E07B00"],
+      ["Consultants", String(Object.keys(sc).length), null, picked ? "in this outlet" : "active", "#6C4AB6"]
     ]));
-    view.appendChild(card("Invoices per consultant", "Top 20.", barsTable(topN(sc, 20))));
+    const g = el("div", "grid2");
+    g.appendChild(card("Outlet-wise count", "Invoices billed by each outlet.",
+      table(["Outlet", "Invoices", "Cash discount", "Share"], Object.entries(outlets).sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => rw([titleCase(k), fmt(v), inr(discOut[k] || 0),
+          pct(sum(outlets) ? v / sum(outlets) * 100 : null)], { cls: picked === k ? "sel" : "" })))));
+    g.appendChild(card(`Sales consultants${picked ? " — " + titleCase(picked) : ""}`,
+      picked ? "Invoices raised by each consultant at this outlet." : "Top 20 consultants overall.",
+      table(["Consultant", "Invoices"], topN(sc, 20).map(([k, v]) => rw([k, fmt(v)])))));
+    view.appendChild(g);
     view.appendChild(card("Month by month", y === "all" ? "All years" : `Year ${y}`,
-      table(["Month", "Invoices", "Cash discount"], MONTHS.map((mn, i) =>
-        rw([mn, fmt(sum((map[i + 1] || {}).sc || {})), inr((map[i + 1] || {}).disc || 0)],
-          { cls: m !== "all" && i === m - 1 ? "sel" : "" })))));
+      table(["Month", "Invoices", "Outlets active", "Cash discount"], MONTHS.map((mn, i) => {
+        const M = map[i + 1] || {};
+        return rw([mn, fmt(sum(M.sc || {})), String(Object.keys(M.outlet || {}).length), inr(M.disc || 0)],
+          { cls: m !== "all" && i === m - 1 ? "sel" : "" });
+      }))));
     return view;
   }
 };
 
 /* -------------------------------------------------------------------- boot */
-let IDX = null, TABS_RAW = null;
-const SEL = { report: "both", year: null, month: "all" };
+let IDX = null;
+const SEL = { report: "both", year: null, month: "all", outlet: "all" };
 
 function toolbar() {
   const bar = el("div", "toolbar");
@@ -675,6 +747,10 @@ function toolbar() {
     .concat(IDX.years.slice().reverse().map(y => [String(y), String(y)])), String(SEL.year)));
   bar.appendChild(field("Month", "sel-month",
     [["all", "All months"]].concat(MONTHS.map((m, i) => [String(i + 1), m])), String(SEL.month)));
+  if (TABS[SEL.report].outlet) {
+    bar.appendChild(field("Outlet", "sel-outlet",
+      [["all", "All outlets"]].concat(IDX.outlets.map(o => [o, titleCase(o)])), String(SEL.outlet)));
+  }
   const btn = el("button", "refresh", "↻ Reload sheet");
   btn.onclick = () => boot();
   bar.appendChild(btn);
@@ -686,6 +762,7 @@ function toolbar() {
 function syncUrl() {
   try {
     const q = new URLSearchParams({ report: SEL.report, year: SEL.year, month: SEL.month });
+    if (TABS[SEL.report].outlet && SEL.outlet !== "all") q.set("outlet", SEL.outlet);
     history.replaceState(null, "", "?" + q.toString());
   } catch (e) { /* ignore */ }
 }
@@ -701,19 +778,23 @@ function render() {
   root.appendChild(toolbar());
 
   const y = SEL.year, m = SEL.month;
-  document.getElementById("sel-report").onchange = e => { SEL.report = e.target.value; syncUrl(); render(); };
+  document.getElementById("sel-report").onchange = e => {
+    SEL.report = e.target.value; SEL.outlet = "all"; syncUrl(); render();
+  };
   document.getElementById("sel-year").onchange = e => { SEL.year = e.target.value; syncUrl(); render(); };
   document.getElementById("sel-month").onchange = e => { SEL.month = e.target.value; syncUrl(); render(); };
+  const so = document.getElementById("sel-outlet");
+  if (so) so.onchange = e => { SEL.outlet = e.target.value; syncUrl(); render(); };
 
   const title = el("div", "reporthead");
   title.innerHTML = `<span class="pill">${TABS[SEL.report].name}</span>
-    <span class="muted">${y === "all" ? "all years" : y} · ${m === "all" ? "all months" : MONTHS[m - 1]}</span>`;
-  if (TABS[SEL.report].annual && m !== "all") title.innerHTML += ` <span class="note">this tab is yearly — month does not apply</span>`;
+    <span class="muted">${y === "all" ? "all years" : y} · ${m === "all" ? "all months" : MONTHS[m - 1]}` +
+    (TABS[SEL.report].outlet && SEL.outlet !== "all" ? ` · outlet ${titleCase(SEL.outlet)}` : "") + `</span>`;
   root.appendChild(title);
 
   const body = el("div", "report");
   try {
-    body.appendChild(VIEWS[SEL.report](IDX, y === "all" ? "all" : Number(y), m));
+    body.appendChild(VIEWS[SEL.report](IDX, y === "all" ? "all" : Number(y), m, SEL.outlet));
   } catch (err) {
     body.appendChild(el("div", "error", `<b>This report could not be drawn.</b><br>${err.message}`));
   }
@@ -740,7 +821,6 @@ async function boot() {
   try {
     const tabs = {};
     await Promise.all(Object.entries(TABS).map(async ([k, t]) => { tabs[k] = await loadTab(t.gid); }));
-    TABS_RAW = tabs;
     IDX = buildIndex(tabs);
     const q = new URLSearchParams(location.search);
     if (q.get("report") && ORDER.includes(q.get("report"))) SEL.report = q.get("report");
@@ -749,6 +829,8 @@ async function boot() {
       : (qy && IDX.years.map(String).includes(qy)) ? qy : String(IDX.years.at(-1));
     const qm = q.get("month");
     SEL.month = qm && (qm === "all" || (Number(qm) >= 1 && Number(qm) <= 12)) ? qm : "all";
+    const qo = q.get("outlet");
+    SEL.outlet = qo && IDX.outlets.includes(qo) ? qo : "all";
     render();
   } catch (err) {
     root.innerHTML = `<div class="error"><b>Could not read the sheet.</b><br>${err.message}<br><br>
@@ -757,4 +839,4 @@ async function boot() {
 }
 
 if (typeof document !== "undefined") boot();
-if (typeof module !== "undefined") module.exports = { buildIndex, parseCsv, dt, num, VIEWS };
+if (typeof module !== "undefined") module.exports = { buildIndex, parseCsv, dt, num, VIEWS, MONTHS };
