@@ -2,6 +2,7 @@
  * One report per tab (dropdown), with year / month filters, plus an outlet
  * filter for the two dealer-CA tabs. Data is read live from the Google Sheet.
  */
+const BUILD = "04 Nov 2026 11:57";
 const SHEET_ID = "15JZOzlxUKAStJpVLxFwRnbLMsHsV1f5B5_NeegUHVxA";
 
 const TABS = {
@@ -867,7 +868,7 @@ function render() {
   const foot = el("div", "foot");
   foot.innerHTML = `<span>SMAM Automart Pvt Ltd · source:
       <a href="https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit" target="_blank" rel="noopener">dealer workbook</a></span>
-    <span class="pill">github pages</span>`;
+    <span class="pill">build ${BUILD}</span>`;
   root.appendChild(foot);
 }
 
