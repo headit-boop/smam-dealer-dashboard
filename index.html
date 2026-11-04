@@ -90,6 +90,22 @@ tr.sel td{background:#FFF6E5 !important;font-weight:650}
 </head>
 <body>
 <div id="app"></div>
-<script src="app.js?v=13"></script>
+<script src="app.js?v=04_Nov_2026_1206"></script>
+<script id="version-check">
+(function () {
+  try {
+    fetch("version.json?t=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (v) {
+        if (!v || !v.build || !window.__BUILD) return;
+        if (v.build === window.__BUILD) return;
+        if (sessionStorage.getItem("reloaded-for") === v.build) return;
+        sessionStorage.setItem("reloaded-for", v.build);
+        location.replace(location.pathname + "?b=" + encodeURIComponent(v.build));
+      })
+      .catch(function () {});
+  } catch (e) {}
+})();
+</script>
 </body>
 </html>
