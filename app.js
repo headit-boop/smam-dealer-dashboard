@@ -14,9 +14,10 @@ const TABS = {
   srinagar: { gid: "782469727",  name: "SRINAGAR DIVISION RTO SHEET", annual: false },
   tatarest: { gid: "1250415802", name: "TATA MOTORS REST DEALER AND SMAM COUNT", annual: false },
   rtoca:    { gid: "1456155471", name: "RTO SHEET DEALER CA WISE", annual: false, outlet: true },
+  rtocaavg: { gid: "1456155471", name: "RTO CA — OUTLET & CA AVERAGES (3M / 6M / YTD)", annual: false, outlet: false },
   billca:   { gid: "353226043",  name: "BILLING SHEET DEALER CA WISE", annual: false, outlet: true }
 };
-const ORDER = ["both", "perf", "billing", "offtake", "smam", "jammu", "srinagar", "tatarest", "rtoca", "billca"];
+const ORDER = ["both", "perf", "billing", "offtake", "smam", "jammu", "srinagar", "tatarest", "rtoca", "rtocaavg", "billca"];
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const VALLEY = ["SRINAGAR","ANANTNAG","BARAMULLA","BUDGAM","PULWAMA",
                 "KUPWARA","GANDERBAL","BANDIPORA","KULGAM","SHOPIAN"];
@@ -675,6 +676,68 @@ const VIEWS = {
         const M = map[i + 1] || {};
         return rw([mn, fmt(sum(M.sc || {})), String(Object.keys(M.outlet || {}).length)],
           { cls: m !== "all" && i === m - 1 ? "sel" : "" });
+      }))));
+    return view;
+  },
+
+
+  rtocaavg(I, y, m) {
+    const cy = y === "all" ? I.years.at(-1) : y;
+    const ymap = I.caReg[cy] || {};
+    const active = Object.keys(ymap).map(Number)
+      .filter(k => sum((ymap[k] || {}).sc || {})).sort((a, b) => a - b);
+    if (!active.length) return empty(`RTO SHEET DEALER CA WISE has no registrations for ${cy}.`,
+      `The tab covers ${rangeText(I, "rtoca")}.`);
+    const anchor = m === "all" ? active[active.length - 1] : Math.min(Math.max(m, 1), 12);
+    const win = n => {
+      const out = [];
+      for (let i = n - 1; i >= 0; i--) { const mm = anchor - i; if (mm >= 1) out.push(mm); }
+      return out;
+    };
+    const w3 = win(3), w6 = win(6), ytd = active.filter(mm => mm <= anchor);
+    const agg = months => {
+      const out = { outlet: {}, sc: {}, total: 0 };
+      for (const mm of months) {
+        const M = ymap[String(mm)];
+        if (!M) continue;
+        out.total += sum(M.sc || {});
+        for (const [k, v] of Object.entries(M.outlet || {})) add(out.outlet, k, v);
+        for (const [k, v] of Object.entries(M.sc || {})) add(out.sc, k, v);
+      }
+      return out;
+    };
+    const A3 = agg(w3), A6 = agg(w6), AY = agg(ytd);
+    const avg = (tot, n) => (n ? tot / n : 0);
+    const monthsTxt = arr => arr.map(mm => MONTHS[mm - 1]).join(", ");
+
+    const rowsFor = (field, n) => Object.entries(AY[field]).sort((a, b) => b[1] - a[1]).slice(0, n)
+      .map(([name, ytdN]) => {
+        const m3 = A3[field][name] || 0, m6 = A6[field][name] || 0;
+        return rw([titleCase(name), fmt(ytdN), ytd.length ? (ytdN / ytd.length).toFixed(1) : "–",
+          fmt(m3), (m3 / w3.length).toFixed(1), fmt(m6), (m6 / w6.length).toFixed(1)]);
+      });
+
+    const view = el("div");
+    view.appendChild(kpiRow([
+      ["Registrations YTD", fmt(AY.total), null, `Jan–${MONTHS[anchor - 1]} ${cy}`, "#0A4C95"],
+      ["Avg / month YTD", (AY.total / (ytd.length || 1)).toFixed(1), null, `${ytd.length} calendar months`, "#128C7E"],
+      [`Last 3 months avg`, (A3.total / w3.length).toFixed(1), null, monthsTxt(w3), "#6C4AB6"],
+      [`Last 6 months avg`, (A6.total / w6.length).toFixed(1), null, monthsTxt(w6), "#E07B00"]
+    ]));
+    view.appendChild(card(`Outlet performance — ${cy}`,
+      `Averages are per month. 3M = ${monthsTxt(w3)} · 6M = ${monthsTxt(w6)} · YTD = Jan–${MONTHS[anchor - 1]}.`,
+      table(["Outlet", "Total YTD", "Avg/month", "3M total", "3M avg", "6M total", "6M avg"],
+        rowsFor("outlet", 15))));
+    view.appendChild(card(`Consultant performance — ${cy}`,
+      "Registrations per consultant, with the same 3M / 6M / YTD averages.",
+      table(["Consultant", "Total YTD", "Avg/month", "3M total", "3M avg", "6M total", "6M avg"],
+        rowsFor("sc", 25))));
+    view.appendChild(card("Month by month", `Registrations and active outlets, ${cy}`,
+      table(["Month", "Registrations", "Outlets active", "Avg per outlet"], MONTHS.map((mn, i) => {
+        const M = ymap[String(i + 1)] || { sc: {}, outlet: {} };
+        const n = sum(M.sc || {}), o = Object.keys(M.outlet || {}).length;
+        return rw([mn, fmt(n), o, o ? (n / o).toFixed(1) : "–"],
+          { cls: i + 1 === anchor ? "sel" : "" });
       }))));
     return view;
   },
