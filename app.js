@@ -2,7 +2,7 @@
  * One report per tab (dropdown), with year / month filters, plus an outlet
  * filter for the two dealer-CA tabs. Data is read live from the Google Sheet.
  */
-const BUILD = "04 Nov 2026 11:57";
+const BUILD = "04 Nov 2026 12:03";
 const SHEET_ID = "15JZOzlxUKAStJpVLxFwRnbLMsHsV1f5B5_NeegUHVxA";
 
 const TABS = {
@@ -14,9 +14,9 @@ const TABS = {
   jammu:    { gid: "1194097827", name: "JAMMU DIVISION RTO SHEET", annual: false },
   srinagar: { gid: "782469727",  name: "SRINAGAR DIVISION RTO SHEET", annual: false },
   tatarest: { gid: "1250415802", name: "TATA MOTORS REST DEALER AND SMAM COUNT", annual: false },
-  rtoca:    { gid: "1456155471", name: "RTO SHEET DEALER CA WISE", annual: false, outlet: true },
+  rtoca:    { gid: "1456155471", name: "RTO SHEET DEALER CA WISE", annual: false, outlet: true, period: true },
   rtocaavg: { gid: "1456155471", name: "RTO CA — OUTLET & CA AVERAGES (3M / 6M / YTD)", annual: false, outlet: false },
-  billca:   { gid: "353226043",  name: "BILLING SHEET DEALER CA WISE", annual: false, outlet: true }
+  billca:   { gid: "353226043",  name: "BILLING SHEET DEALER CA WISE", annual: false, outlet: true, period: true }
 };
 const ORDER = ["both", "perf", "billing", "offtake", "smam", "jammu", "srinagar", "tatarest", "rtoca", "rtocaavg", "billca"];
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -355,6 +355,30 @@ function empty(msg, sub) {
   return card("No rows for this selection", msg + (sub ? " " + sub : ""), el("div", "empty", ""));
 }
 
+
+const PERIODS = [["3m", "Last 3 months"], ["6m", "Last 6 months"], ["12m", "Last 12 months"],
+                 ["ytd", "This year (YTD)"], ["month", "Selected month"]];
+function periodInfo(I, key, y, period, m) {
+  const cy = y === "all" ? I.years.at(-1) : y;
+  const map = key === "billca" ? (I.caBill[cy] || {}) : (I.caReg[cy] || {});
+  const active = Object.keys(map).map(Number)
+    .filter(k => sum((map[k] || {}).sc || {}) > 0).sort((a, b) => a - b);
+  const last = active.length ? active[active.length - 1] : 12;
+  const anchor = period === "month" ? Math.min(Math.max(m === "all" ? last : Number(m), 1), 12) : last;
+  let months;
+  if (period === "month") months = [anchor];
+  else if (period === "ytd") months = Array.from({ length: anchor }, (_, i) => i + 1);
+  else {
+    const n = period === "6m" ? 6 : period === "12m" ? 12 : 3;
+    const start = Math.max(1, anchor - n + 1);
+    months = Array.from({ length: anchor - start + 1 }, (_, i) => start + i);
+  }
+  const label = period === "month" ? MONTHS[anchor - 1]
+    : period === "ytd" ? `Jan–${MONTHS[anchor - 1]}`
+      : `${MONTHS[months[0] - 1]}–${MONTHS[months[months.length - 1] - 1]}`;
+  return { cy, map, months, anchor, label };
+}
+
 /* ------------------------------------------------------------------- views */
 const VIEWS = {
   both(I, y, m) {
@@ -638,49 +662,64 @@ const VIEWS = {
     return view;
   },
 
-  rtoca(I, y, m, outlet) {
-    const map = yearMap(I.caReg, y);
-    const ms = monthList(map, m);
-    const outlets = mergeCounters(ms, "outlet");
-    const scAll = mergeCounters(ms, "sc");
-    if (!sum(scAll)) return empty(`RTO SHEET DEALER CA WISE has no registrations for ${y}${m === "all" ? "" : " " + MONTHS[m - 1]}.`,
+  rtoca(I, y, m, outlet, period) {
+    const P = periodInfo(I, "rtoca", y, period, m);
+    const ms = P.months.map(mm => P.map[String(mm)] || {});
+    const sc = mergeCounters(ms, "sc");
+    if (!sum(sc)) return empty(`RTO SHEET DEALER CA WISE has no registrations in that period.`,
       `The tab covers ${rangeText(I, "rtoca")}.`);
+    const outlets = mergeCounters(ms, "outlet");
     const scOut = mergeCounters(ms, "scOut");
+    const regs = sum(sc);
     const picked = outlet && outlet !== "all" ? outlet : null;
-    const sc = picked
+    const caPerOutlet = {};
+    for (const k of Object.keys(scOut)) {
+      const [o, c] = k.split("||");
+      (caPerOutlet[o] ||= new Set()).add(c);
+    }
+    const scPicked = picked
       ? Object.fromEntries(Object.entries(scOut).filter(([k]) => k.startsWith(picked + "||"))
         .map(([k, v]) => [k.split("||")[1], v]))
-      : scAll;
-    const regs = picked ? sum(sc) : sum(scAll);
+      : sc;
+    const nM = P.months.length;
+
     const view = el("div");
     view.appendChild(kpiRow([
-      ["Registrations", fmt(regs), null, picked ? `outlet: ${titleCase(picked)}` : "all outlets", "#0A4C95"],
-      picked
-        ? ["Share of all", pct(sum(outlets) ? regs / sum(outlets) * 100 : null), null, `of ${fmt(sum(outlets))} registrations`, "#128C7E"]
-        : ["Outlets", String(Object.keys(outlets).length), null, "in the selection", "#128C7E"],
-      picked
-        ? ["Outlet", titleCase(picked), null, "selected above", "#6C4AB6"]
-        : ["Top outlet", topN(outlets, 1)[0]?.[0] || "–", null, `${fmt(topN(outlets, 1)[0]?.[1] || 0)} registrations`, "#6C4AB6"],
-      ["Consultants", String(Object.keys(sc).length), null, picked ? "in this outlet" : "active", "#5B6B82"]
+      [`Registrations · ${P.label}`, fmt(picked ? sum(scPicked) : regs), null,
+        picked ? `outlet ${titleCase(picked)}` : `${nM} month${nM > 1 ? "s" : ""}`, "#0A4C95"],
+      ["Average / month", ((picked ? sum(scPicked) : regs) / nM).toFixed(1), null,
+        `over ${nM} month${nM > 1 ? "s" : ""}`, "#128C7E"],
+      ["CAs active", String(Object.keys(scPicked).length), null,
+        picked ? `at ${titleCase(picked)}` : "in the period", "#6C4AB6"],
+      ["Outlets", String(Object.keys(outlets).length), null, "with registrations", "#E07B00"]
     ]));
+
     const g = el("div", "grid2");
-    g.appendChild(card("Outlet-wise count", "Registrations handled by each outlet.",
-      table(["Outlet", "Registrations", "Share"], Object.entries(outlets).sort((a, b) => b[1] - a[1])
-        .map(([k, v]) => rw([titleCase(k), fmt(v), pct(regs ? v / sum(outlets) * 100 : null)],
-          { cls: picked === k ? "sel" : "" })))));
-    g.appendChild(card(`Sales consultants${picked ? " — " + titleCase(picked) : ""}`,
-      picked ? "Consultants who registered vehicles at this outlet." : "Top 20 consultants overall.",
-      table(["Consultant", "Registrations"], topN(sc, 20).map(([k, v]) => rw([k, fmt(v)])))));
+    g.appendChild(card("Outlet-wise performance",
+      "Registrations, monthly average and how many CAs worked each outlet.",
+      table(["Outlet", "Registrations", "Avg/month", "CAs", "Share"],
+        Object.entries(outlets).sort((a, b) => b[1] - a[1]).map(([k, v]) => rw([
+          titleCase(k), fmt(v), (v / nM).toFixed(1), String((caPerOutlet[k] || new Set()).size),
+          pct(regs ? v / regs * 100 : null)], { cls: picked === k ? "sel" : "" })))));
+
+    g.appendChild(card(`CA-wise performance${picked ? " — " + titleCase(picked) : ""}`,
+      picked ? `Only ${titleCase(picked)}: ${fmt(sum(scPicked))} registrations over ${nM} months.`
+        : "Every consultant, all outlets.",
+      table(["Consultant", "Registrations", "Avg/month", "Share"],
+        Object.entries(scPicked).sort((a, b) => b[1] - a[1]).map(([k, v]) => rw([
+          k, fmt(v), (v / nM).toFixed(1),
+          pct((picked ? sum(scPicked) : regs) ? v / (picked ? sum(scPicked) : regs) * 100 : null)])))));
     view.appendChild(g);
-    view.appendChild(card("Month by month", y === "all" ? "All years" : `Year ${y}`,
-      table(["Month", "Registrations", "Outlets active"], MONTHS.map((mn, i) => {
-        const M = map[i + 1] || {};
-        return rw([mn, fmt(sum(M.sc || {})), String(Object.keys(M.outlet || {}).length)],
-          { cls: m !== "all" && i === m - 1 ? "sel" : "" });
+
+    view.appendChild(card("Month by month", `${P.cy} · selected period highlighted`,
+      table(["Month", "Registrations", "CAs", "Outlets active", "Avg / CA"], MONTHS.map((mn, i) => {
+        const M = P.map[String(i + 1)] || {};
+        const n = sum(M.sc || {}), nc = Object.keys(M.sc || {}).length;
+        return rw([mn, fmt(n), nc, Object.keys(M.outlet || {}).length, nc ? (n / nc).toFixed(1) : "–"],
+          { cls: P.months.includes(i + 1) ? "sel" : "" });
       }))));
     return view;
   },
-
 
   rtocaavg(I, y, m) {
     const cy = y === "all" ? I.years.at(-1) : y;
@@ -743,46 +782,60 @@ const VIEWS = {
     return view;
   },
 
-  billca(I, y, m, outlet) {
-    const map = yearMap(I.caBill, y);
-    const ms = monthList(map, m);
-    const outlets = mergeCounters(ms, "outlet");
-    const scAll = mergeCounters(ms, "sc");
-    if (!sum(scAll)) return empty(`BILLING SHEET DEALER CA WISE has no invoices for ${y}${m === "all" ? "" : " " + MONTHS[m - 1]}.`,
+  billca(I, y, m, outlet, period) {
+    const P = periodInfo(I, "billca", y, period, m);
+    const ms = P.months.map(mm => P.map[String(mm)] || {});
+    const sc = mergeCounters(ms, "sc");
+    if (!sum(sc)) return empty(`BILLING SHEET DEALER CA WISE has no invoices in that period.`,
       `The tab covers ${rangeText(I, "billca")}.`);
+    const outlets = mergeCounters(ms, "outlet");
     const scOut = mergeCounters(ms, "scOut");
-    const discAll = sumField(ms, "disc");
     const discOut = mergeCounters(ms, "discOut");
+    const discAll = sumField(ms, "disc");
+    const invoices = sum(sc);
     const picked = outlet && outlet !== "all" ? outlet : null;
-    const sc = picked
+    const caPerOutlet = {};
+    for (const k of Object.keys(scOut)) {
+      const [o, c] = k.split("||");
+      (caPerOutlet[o] ||= new Set()).add(c);
+    }
+    const scPicked = picked
       ? Object.fromEntries(Object.entries(scOut).filter(([k]) => k.startsWith(picked + "||"))
         .map(([k, v]) => [k.split("||")[1], v]))
-      : scAll;
-    const invoices = picked ? sum(sc) : sum(scAll);
+      : sc;
+    const nM = P.months.length;
     const disc = picked ? (discOut[picked] || 0) : discAll;
     const view = el("div");
     view.appendChild(kpiRow([
-      ["Invoices", fmt(invoices), null, picked ? `outlet: ${titleCase(picked)}` : "all outlets", "#0A4C95"],
-      picked
-        ? ["Share of all", pct(sum(outlets) ? invoices / sum(outlets) * 100 : null), null, `of ${fmt(sum(outlets))} invoices`, "#128C7E"]
-        : ["Outlets", String(Object.keys(outlets).length), null, "in the selection", "#128C7E"],
-      ["Cash discount", inr(disc), null, picked ? "for this outlet" : "given", "#E07B00"],
-      ["Consultants", String(Object.keys(sc).length), null, picked ? "in this outlet" : "active", "#6C4AB6"]
+      [`Invoices · ${P.label}`, fmt(picked ? sum(scPicked) : invoices), null,
+        picked ? `outlet ${titleCase(picked)}` : `${nM} month${nM > 1 ? "s" : ""}`, "#0A4C95"],
+      ["Average / month", ((picked ? sum(scPicked) : invoices) / nM).toFixed(1), null,
+        `over ${nM} month${nM > 1 ? "s" : ""}`, "#128C7E"],
+      ["Cash discount", inr(disc), null, picked ? "for this outlet" : "in the period", "#E07B00"],
+      ["CAs active", String(Object.keys(scPicked).length), null, "in the period", "#6C4AB6"]
     ]));
     const g = el("div", "grid2");
-    g.appendChild(card("Outlet-wise count", "Invoices billed by each outlet.",
-      table(["Outlet", "Invoices", "Cash discount", "Share"], Object.entries(outlets).sort((a, b) => b[1] - a[1])
-        .map(([k, v]) => rw([titleCase(k), fmt(v), inr(discOut[k] || 0),
-          pct(sum(outlets) ? v / sum(outlets) * 100 : null)], { cls: picked === k ? "sel" : "" })))));
-    g.appendChild(card(`Sales consultants${picked ? " — " + titleCase(picked) : ""}`,
-      picked ? "Invoices raised by each consultant at this outlet." : "Top 20 consultants overall.",
-      table(["Consultant", "Invoices"], topN(sc, 20).map(([k, v]) => rw([k, fmt(v)])))));
+    g.appendChild(card("Outlet-wise performance",
+      "Invoices, monthly average, cash discount and how many CAs billed each outlet.",
+      table(["Outlet", "Invoices", "Avg/month", "Discount", "CAs", "Share"],
+        Object.entries(outlets).sort((a, b) => b[1] - a[1]).map(([k, v]) => rw([
+          titleCase(k), fmt(v), (v / nM).toFixed(1), inr(discOut[k] || 0),
+          String((caPerOutlet[k] || new Set()).size),
+          pct(invoices ? v / invoices * 100 : null)], { cls: picked === k ? "sel" : "" })))));
+    g.appendChild(card(`CA-wise performance${picked ? " — " + titleCase(picked) : ""}`,
+      picked ? `Only ${titleCase(picked)}: ${fmt(sum(scPicked))} invoices over ${nM} months.`
+        : "Every consultant, all outlets.",
+      table(["Consultant", "Invoices", "Avg/month", "Share"],
+        Object.entries(scPicked).sort((a, b) => b[1] - a[1]).map(([k, v]) => rw([
+          k, fmt(v), (v / nM).toFixed(1),
+          pct((picked ? sum(scPicked) : invoices) ? v / (picked ? sum(scPicked) : invoices) * 100 : null)])))));
     view.appendChild(g);
-    view.appendChild(card("Month by month", y === "all" ? "All years" : `Year ${y}`,
-      table(["Month", "Invoices", "Outlets active", "Cash discount"], MONTHS.map((mn, i) => {
-        const M = map[i + 1] || {};
-        return rw([mn, fmt(sum(M.sc || {})), String(Object.keys(M.outlet || {}).length), inr(M.disc || 0)],
-          { cls: m !== "all" && i === m - 1 ? "sel" : "" });
+    view.appendChild(card("Month by month", `${P.cy} · selected period highlighted`,
+      table(["Month", "Invoices", "CAs", "Outlets active", "Cash discount"], MONTHS.map((mn, i) => {
+        const M = P.map[String(i + 1)] || {};
+        return rw([mn, fmt(sum(M.sc || {})), Object.keys(M.sc || {}).length,
+          Object.keys(M.outlet || {}).length, inr(M.disc || 0)],
+          { cls: P.months.includes(i + 1) ? "sel" : "" });
       }))));
     return view;
   }
@@ -790,7 +843,7 @@ const VIEWS = {
 
 /* -------------------------------------------------------------------- boot */
 let IDX = null;
-const SEL = { report: "both", year: null, month: "all", outlet: "all" };
+const SEL = { report: "both", year: null, month: "all", outlet: "all", period: "ytd" };
 
 function toolbar() {
   const bar = el("div", "toolbar");
@@ -811,6 +864,9 @@ function toolbar() {
     .concat(IDX.years.slice().reverse().map(y => [String(y), String(y)])), String(SEL.year)));
   bar.appendChild(field("Month", "sel-month",
     [["all", "All months"]].concat(MONTHS.map((m, i) => [String(i + 1), m])), String(SEL.month)));
+  if (TABS[SEL.report].period) {
+    bar.appendChild(field("Period", "sel-period", PERIODS, String(SEL.period)));
+  }
   if (TABS[SEL.report].outlet) {
     bar.appendChild(field("Outlet", "sel-outlet",
       [["all", "All outlets"]].concat(IDX.outlets.map(o => [o, titleCase(o)])), String(SEL.outlet)));
@@ -826,6 +882,7 @@ function toolbar() {
 function syncUrl() {
   try {
     const q = new URLSearchParams({ report: SEL.report, year: SEL.year, month: SEL.month });
+    if (TABS[SEL.report].period) q.set("period", SEL.period);
     if (TABS[SEL.report].outlet && SEL.outlet !== "all") q.set("outlet", SEL.outlet);
     history.replaceState(null, "", "?" + q.toString());
   } catch (e) { /* ignore */ }
@@ -847,18 +904,21 @@ function render() {
   };
   document.getElementById("sel-year").onchange = e => { SEL.year = e.target.value; syncUrl(); render(); };
   document.getElementById("sel-month").onchange = e => { SEL.month = e.target.value; syncUrl(); render(); };
+  const sp = document.getElementById("sel-period");
+  if (sp) sp.onchange = e => { SEL.period = e.target.value; syncUrl(); render(); };
   const so = document.getElementById("sel-outlet");
   if (so) so.onchange = e => { SEL.outlet = e.target.value; syncUrl(); render(); };
 
   const title = el("div", "reporthead");
   title.innerHTML = `<span class="pill">${TABS[SEL.report].name}</span>
     <span class="muted">${y === "all" ? "all years" : y} · ${m === "all" ? "all months" : MONTHS[m - 1]}` +
+    (TABS[SEL.report].period ? ` · ${(PERIODS.find(p => p[0] === SEL.period) || ["", ""])[1]}` : "") +
     (TABS[SEL.report].outlet && SEL.outlet !== "all" ? ` · outlet ${titleCase(SEL.outlet)}` : "") + `</span>`;
   root.appendChild(title);
 
   const body = el("div", "report");
   try {
-    body.appendChild(VIEWS[SEL.report](IDX, y === "all" ? "all" : Number(y), m, SEL.outlet));
+    body.appendChild(VIEWS[SEL.report](IDX, y === "all" ? "all" : Number(y), m, SEL.outlet, SEL.period));
   } catch (err) {
     body.appendChild(el("div", "error", `<b>This report could not be drawn.</b><br>${err.message}`));
   }
@@ -893,6 +953,8 @@ async function boot() {
       : (qy && IDX.years.map(String).includes(qy)) ? qy : String(IDX.years.at(-1));
     const qm = q.get("month");
     SEL.month = qm && (qm === "all" || (Number(qm) >= 1 && Number(qm) <= 12)) ? qm : "all";
+    const qp = q.get("period");
+    SEL.period = qp && PERIODS.some(p => p[0] === qp) ? qp : "ytd";
     const qo = q.get("outlet");
     SEL.outlet = qo && IDX.outlets.includes(qo) ? qo : "all";
     render();
